@@ -1,0 +1,98 @@
+import os
+import pandas as pd
+
+folder_path = r"S:\바탕화면\sample"
+if not os.path.exists(folder_path):
+    print(f"폴더를 찾을 수 없습니다: {folder_path}")
+    exit()
+
+files = [f for f in os.listdir(folder_path) if f.lower().endswith('.csv')]
+print(f"총 {len(files)}개의 CSV 파일 분석을 시작합니다.\n")
+
+summary_data = []
+
+for file_name in files:
+    file_path = os.path.join(folder_path, file_name)
+    print(f"▶ 파일명: {file_name}")
+
+    try:
+        df = pd.read_csv(file_path, skiprows=7, encoding='cp949', low_memory=False)
+        needed_cols = {'Mcmd', 'Mfb', 'Mcur'}
+        if not needed_cols.issubset(df.columns):
+            print("  - 필요한 컬럼이 없습니다. 다음 파일로 스킵.")
+            continue
+
+        df['Mcmd'] = pd.to_numeric(df['Mcmd'], errors='coerce')
+        df['Mfb'] = pd.to_numeric(df['Mfb'], errors='coerce')
+        df['Mcur'] = pd.to_numeric(df['Mcur'], errors='coerce')
+        n = len(df)
+        i = 0
+
+        results_300 = []
+        results_0 = []
+
+        while i < n:
+            # 300 구간 탐색
+            if df['Mcmd'].iloc[i] == 300:
+                start = i
+                while i < n and df['Mcmd'].iloc[i] == 300:
+                    i += 1
+                end = i - 1
+                df_300 = df.iloc[start:end+1]
+                if not df_300.empty:
+                    rel_pos = df_300['Mcur'].values.argmax()
+                    row_300 = df_300.iloc[rel_pos]
+                    results_300.append({
+                        "300_행위치": row_300.name,
+                        "300_Mcur": row_300["Mcur"],
+                        "300_Mfb": row_300["Mfb"]
+                    })
+            # 0 구간 탐색
+            elif df['Mcmd'].iloc[i] == 0:
+                start = i
+                while i < n and df['Mcmd'].iloc[i] == 0:
+                    i += 1
+                end = i - 1
+                df_0 = df.iloc[start:end+1]
+                if not df_0.empty:
+                    rel_pos = df_0['Mcur'].values.argmax()
+                    row_0 = df_0.iloc[rel_pos]
+                    results_0.append({
+                        "0_행위치": row_0.name,
+                        "0_Bcur": row_0["Mcur"],
+                        "0_Bfb": row_0["Mfb"]
+                    })
+            else:
+                i += 1
+
+        # 길이 맞춰 페어링
+        max_len = max(len(results_300), len(results_0))
+        for j in range(max_len):
+            row = {
+                "파일명": file_name,
+                "300_행위치": results_300[j]["300_행위치"] if j < len(results_300) else None,
+                "300_Mcur": results_300[j]["300_Mcur"] if j < len(results_300) else None,
+                "300_Mfb": results_300[j]["300_Mfb"] if j < len(results_300) else None,
+                "0_행위치": results_0[j]["0_행위치"] if j < len(results_0) else None,
+                "0_Bcur": results_0[j]["0_Bcur"] if j < len(results_0) else None,
+                "0_Bfb": results_0[j]["0_Bfb"] if j < len(results_0) else None
+            }
+            summary_data.append(row)
+
+    except Exception as e:
+        print(f"  - 처리 중 오류 발생: {e}\n")
+
+# summary_data를 한 엑셀 파일로 저장
+if summary_data:
+    summary_df = pd.DataFrame(summary_data, columns=[
+        "파일명",
+        "300_행위치", "300_Mcur", "300_Mfb",
+        "0_행위치", "0_Bcur", "0_Bfb"
+    ])
+    out_path = os.path.join(folder_path, "모든파일_300_0_각연속구간_최대전류_정상결과.xlsx")
+    summary_df.to_excel(out_path, index=False)
+    print(f"\n--- 전체 결과를 한 엑셀 파일로 저장 완료 ---\n{out_path}")
+else:
+    print("구간 결과가 없습니다.")
+
+print("모든 CSV 파일 분석 완료.")
