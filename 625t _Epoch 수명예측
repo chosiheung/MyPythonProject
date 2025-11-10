@@ -1,0 +1,134 @@
+import os
+import pandas as pd
+import numpy as np
+from tensorflow import keras
+
+# --------- 1. 구간별 최대 전류 등 요약 + 라벨 생성 ---------
+folder_path = r"S:\바탕화면\sample"
+if not os.path.exists(folder_path):
+    print(f"폴더를 찾을 수 없습니다: {folder_path}")
+    exit()
+files = [f for f in os.listdir(folder_path) if f.lower().endswith('.csv')]
+print(f"총 {len(files)}개의 CSV 파일 분석을 시작합니다.\n")
+
+summary_data = []
+
+for file_name in files:
+    file_path = os.path.join(folder_path, file_name)
+    print(f"▶ 파일명: {file_name}")
+    try:
+        df = pd.read_csv(file_path, skiprows=7, encoding='cp949', low_memory=False)
+        needed_cols = {'Mcmd', 'Mfb', 'Mcur'}
+        if not needed_cols.issubset(df.columns):
+            print("  - 필요한 컬럼이 없습니다. 다음 파일로 스킵.")
+            continue
+        df['Mcmd'] = pd.to_numeric(df['Mcmd'], errors='coerce')
+        df['Mfb'] = pd.to_numeric(df['Mfb'], errors='coerce')
+        df['Mcur'] = pd.to_numeric(df['Mcur'], errors='coerce')
+        n = len(df)
+        i = 0
+        results_300 = []
+        results_0 = []
+
+        while i < n:
+            # 300 구간 탐색
+            if df['Mcmd'].iloc[i] == 300:
+                start = i
+                while i < n and df['Mcmd'].iloc[i] == 300:
+                    i += 1
+                end = i - 1
+                df_300 = df.iloc[start:end+1]
+                if not df_300.empty:
+                    rel_pos = df_300['Mcur'].values.argmax()
+                    row_300 = df_300.iloc[rel_pos]
+                    results_300.append({
+                        "300_행위치": row_300.name,
+                        "300_Mcur": row_300["Mcur"],
+                        "300_Mfb": row_300["Mfb"]
+                    })
+            # 0 구간 탐색
+            elif df['Mcmd'].iloc[i] == 0:
+                start = i
+                while i < n and df['Mcmd'].iloc[i] == 0:
+                    i += 1
+                end = i - 1
+                df_0 = df.iloc[start:end+1]
+                if not df_0.empty:
+                    rel_pos = df_0['Mcur'].values.argmax()
+                    row_0 = df_0.iloc[rel_pos]
+                    results_0.append({
+                        "0_행위치": row_0.name,
+                        "0_Bcur": row_0["Mcur"],
+                        "0_Bfb": row_0["Mfb"]
+                    })
+            else:
+                i += 1
+
+        max_len = max(len(results_300), len(results_0))
+        for j in range(max_len):
+            # 라벨(이상/파손) 생성
+            broken_0 = False
+            if j < len(results_0):
+                if (results_0[j]["0_Bfb"] is not None and results_0[j]["0_Bfb"] <= -10) or \
+                   (results_0[j]["0_Bcur"] is not None and results_0[j]["0_Bcur"] >= 1.5):
+                    broken_0 = True
+            broken_300 = False
+            if j < len(results_300):
+                if (results_300[j]["300_Mfb"] is not None and results_300[j]["300_Mfb"] >= 310) or \
+                   (results_300[j]["300_Mcur"] is not None and results_300[j]["300_Mcur"] >= 1.5):
+                    broken_300 = True
+            row = {
+                "파일명": file_name,
+                "300_행위치": results_300[j]["300_행위치"] if j < len(results_300) else None,
+                "300_Mcur": results_300[j]["300_Mcur"] if j < len(results_300) else None,
+                "300_Mfb": results_300[j]["300_Mfb"] if j < len(results_300) else None,
+                "300_이상": int(broken_300),
+                "0_행위치": results_0[j]["0_행위치"] if j < len(results_0) else None,
+                "0_Bcur": results_0[j]["0_Bcur"] if j < len(results_0) else None,
+                "0_Bfb": results_0[j]["0_Bfb"] if j < len(results_0) else None,
+                "0_이상": int(broken_0)
+            }
+            summary_data.append(row)
+    except Exception as e:
+        print(f"  - 처리 중 오류 발생: {e}\n")
+
+# summary_data → DataFrame/Excel 저장
+summary_df = pd.DataFrame(summary_data, columns=[
+    "파일명", "300_행위치", "300_Mcur", "300_Mfb", "300_이상",
+    "0_행위치", "0_Bcur", "0_Bfb", "0_이상"
+])
+out_path = os.path.join(folder_path, "모든파일_300_0_각연속구간_최대전류_이상라벨포함.xlsx")
+summary_df.to_excel(out_path, index=False)
+print(f"\n--- 전체 결과를 한 엑셀 파일(라벨 있음)로 저장 완료 ---\n{out_path}")
+
+# --------- 2. 머신러닝(LSTM) 데이터 준비 및 학습 ---------
+print("\n--- LSTM 예측용 데이터 준비 시작 ---\n")
+# (엑셀을 다시 로드)
+df_ml = pd.read_excel(out_path)
+
+# feature: 주요 수치만 (여기서는 4개 예시)
+features = ["300_Mcur", "300_Mfb", "0_Bcur", "0_Bfb"]
+# 타깃: 예시로 '300_이상'(이상/파손 여부)로 예측 (0_이상 예측 시 df_ml["0_이상"] 사용)
+X = df_ml[features].fillna(0).to_numpy()
+y = df_ml["300_이상"].to_numpy()
+
+# LSTM 입력차원 맞추기 (samples, timesteps=1, features)
+X = X.reshape((-1, 1, len(features)))
+
+# 단순 LSTM 분류 모델
+model = keras.Sequential([
+    keras.layers.LSTM(16, input_shape=(1, len(features))),
+    keras.layers.Dense(1, activation='sigmoid')
+])
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+print("모델 학습 시작")
+model.fit(X, y, epochs=30, batch_size=8, verbose=1)
+
+# 예측결과 예시 출력
+y_pred_prob = model.predict(X)
+y_pred = (y_pred_prob > 0.5).astype(int)
+print("실제 라벨 샘플:", y[:10])
+print("예측(정답확률0.5초과=이상) 샘플:", y_pred[:10].reshape(-1))
+
+print("\n⭐️ 전체 파이프라인 완료: 특성추출+라벨+머신러닝 학습+예측\n")
