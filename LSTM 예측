@@ -1,0 +1,141 @@
+import pandas as pd
+import numpy as np
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+
+# ----------------------------------------------------------------------
+# 1. 데이터 로드 및 확인 (파일 경로 수정 완료)
+# ----------------------------------------------------------------------
+print("--- 1. 데이터 로드 및 확인 ---")
+
+# 🚨🚨🚨 사용자님의 요청에 따라 S: 드라이브 경로를 반영했습니다.
+FILE_PATH = 'S:/바탕화면/sample2/output_min_feedback_per_cycle_파손여부 추가.xlsx' 
+
+try:
+    # 엑셀 파일 로드
+    df = pd.read_excel(FILE_PATH) 
+    
+except FileNotFoundError:
+    print(f"오류: 파일 경로를 찾을 수 없습니다. 경로를 다시 확인해 주세요: {FILE_PATH}")
+    exit() 
+except Exception as e:
+    print(f"파일을 읽는 중 오류가 발생했습니다: {e}")
+    exit()
+
+# 데이터프레임의 첫 5행 확인
+print("로드된 데이터:")
+print(df.head())
+
+# LSTM 입력 특성 선택: 경과시간, 커맨드값, 피드백값
+features = df[['경과시간', '커맨드값', '피드백값']].values
+
+
+# ----------------------------------------------------------------------
+# 2. 데이터 전처리
+# ----------------------------------------------------------------------
+
+# 2-1. 정규화 (MinMaxScaler)
+scaler = MinMaxScaler()
+scaled_features = scaler.fit_transform(features)
+
+# 2-2. 시퀀스 데이터 생성 함수
+def create_sequences(data, time_step):
+    """
+    LSTM 학습을 위한 시퀀스 (X)와 예측 타겟 (y)를 생성합니다.
+    y는 다음 시점의 '피드백값'(인덱스 2)입니다.
+    """
+    X, y = [], []
+    for i in range(len(data) - time_step):
+        X.append(data[i:(i + time_step), :])
+        y.append(data[i + time_step, 2])
+    return np.array(X), np.array(y)
+
+# 하이퍼파라미터: Time Step 설정
+TIME_STEP = 10 
+X, y = create_sequences(scaled_features, TIME_STEP)
+
+print(f"\n입력 시퀀스 X.shape: {X.shape}") 
+print(f"타겟 Y.shape: {y.shape}")
+
+if X.shape[0] == 0:
+    print("오류: 데이터의 길이가 Time Step보다 짧아 시퀀스를 만들 수 없습니다.")
+    exit()
+
+# 2-3. 훈련/테스트 데이터 분할
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+print(f"훈련 데이터 X_train.shape: {X_train.shape}, y_train.shape: {y_train.shape}")
+
+
+# ----------------------------------------------------------------------
+# 3. LSTM 모델 구축 및 훈련
+# ----------------------------------------------------------------------
+print("\n--- 3. LSTM 모델 구축 및 학습 ---")
+
+# 하이퍼파라미터 설정
+EPOCHS = 50
+
+BATCH_SIZE = 1 
+
+# 모델 구축
+model = Sequential()
+model.add(LSTM(
+    units=50, 
+    activation='relu', 
+    input_shape=(X_train.shape[1], X_train.shape[2])
+))
+model.add(Dense(units=1)) 
+
+# 모델 컴파일 (회귀: MSE)
+model.compile(optimizer='adam', loss='mse')
+
+# 모델 학습
+history = model.fit(
+    X_train, 
+    y_train, 
+    epochs=EPOCHS, 
+    batch_size=BATCH_SIZE, 
+    validation_split=0.1, 
+    verbose=2 
+)
+print("--- 모델 학습 완료 ---")
+
+# ----------------------------------------------------------------------
+# 4. 예측 및 결과 시각화
+# ----------------------------------------------------------------------
+print("\n--- 4. 예측 및 결과 ---")
+
+# 테스트 데이터로 예측 수행
+y_pred_scaled = model.predict(X_test)
+
+# 역정규화를 위한 함수 정의
+def inverse_transform_data(scaled_y, scaler, feature_index=2, total_features=3):
+    """정규화된 예측값만 역정규화합니다."""
+    dummy_data = np.zeros((len(scaled_y), total_features))
+    dummy_data[:, feature_index] = scaled_y.flatten()
+    return scaler.inverse_transform(dummy_data)[:, feature_index]
+
+# 실제 예측값과 테스트 값 역정규화
+y_pred_original = inverse_transform_data(y_pred_scaled, scaler)
+y_test_original = inverse_transform_data(y_test, scaler)
+
+# 결과 출력
+print("LSTM 피드백 값 예측 결과 (원래 스케일):")
+results = pd.DataFrame({
+    'Actual_Feedback': y_test_original,
+    'Predicted_Feedback': y_pred_original
+})
+print(results)
+
+# 시각화
+plt.figure(figsize=(14, 7))
+plt.plot(y_test_original, label='Actual Feedback Value', marker='o')
+plt.plot(y_pred_original, label='Predicted Feedback Value (LSTM)', marker='x')
+plt.title(f'LSTM Time Series Prediction (Time Step: {TIME_STEP}, Epochs: {EPOCHS})')
+plt.xlabel('Time Step Index')
+plt.ylabel('Feedback Value')
+plt.legend()
+plt.grid(True)
+plt.show()
